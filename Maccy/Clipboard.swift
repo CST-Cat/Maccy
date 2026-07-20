@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import ImageIO
 import Sauce
 
 class Clipboard {
@@ -32,6 +33,9 @@ class Clipboard {
 
   private var enabledTypes: Set<NSPasteboard.PasteboardType> { Defaults[.enabledPasteboardTypes] }
   private var disabledTypes: Set<NSPasteboard.PasteboardType> { supportedTypes.subtracting(enabledTypes) }
+  private var imagesEnabled: Bool {
+    !enabledTypes.isDisjoint(with: Set(StorageType.images.types))
+  }
 
   private var sourceApp: NSRunningApplication? { NSWorkspace.shared.frontmostApplication }
 
@@ -208,8 +212,12 @@ class Clipboard {
         types = types.subtracting([.microsoftLinkSource, .microsoftObjectLink, .pdf])
       }
 
-      types.forEach { type in
-        contents.append(HistoryItemContent(type: type.rawValue, value: item.data(forType: type)))
+      if let imageContent = materializedImageContent(from: item, types: types) {
+        contents.append(imageContent)
+      } else {
+        types.forEach { type in
+          contents.append(HistoryItemContent(type: type.rawValue, value: item.data(forType: type)))
+        }
       }
     })
 
@@ -228,6 +236,45 @@ class Clipboard {
     historyItem.title = historyItem.generateTitle()
 
     onNewCopyHooks.forEach({ $0(historyItem) })
+  }
+
+  // Some clipboard sync tools expose an image only as a file URL backed by a temporary cache file.
+  // Persist the image data while the file is still available so the history item keeps working after cleanup.
+  private func materializedImageContent(
+    from item: NSPasteboardItem,
+    types: Set<NSPasteboard.PasteboardType>
+  ) -> HistoryItemContent? {
+    guard types == [.fileURL],
+          imagesEnabled,
+          let urlData = item.data(forType: .fileURL),
+          let url = URL(dataRepresentation: urlData, relativeTo: nil, isAbsolute: true),
+          url.isFileURL,
+          isTemporaryFile(url) else {
+      return nil
+    }
+
+    guard let data = try? Data(contentsOf: url),
+          let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+          let imageType = CGImageSourceGetType(imageSource) else {
+      return nil
+    }
+
+    let pasteboardType = NSPasteboard.PasteboardType(imageType as String)
+    guard [.tiff, .png, .jpeg, .heic].contains(pasteboardType), NSImage(data: data) != nil else {
+      return nil
+    }
+
+    return HistoryItemContent(type: pasteboardType.rawValue, value: data)
+  }
+
+  private func isTemporaryFile(_ url: URL) -> Bool {
+    let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+    let temporaryPath = FileManager.default.temporaryDirectory
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
+      .path
+
+    return path.hasPrefix(temporaryPath + "/") || path.contains("/Library/Caches/")
   }
 
   private func shouldIgnore(_ types: Set<NSPasteboard.PasteboardType>) -> Bool {

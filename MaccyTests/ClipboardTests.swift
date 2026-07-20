@@ -14,6 +14,7 @@ class ClipboardTests: XCTestCase {
   let customType = NSPasteboard.PasteboardType(rawValue: "org.maccy.ConfidentialType")
   let fileURLType = NSPasteboard.PasteboardType.fileURL
   let htmlType = NSPasteboard.PasteboardType.html
+  let jpegType = NSPasteboard.PasteboardType.jpeg
   let rtfType = NSPasteboard.PasteboardType.rtf
   let stringType = NSPasteboard.PasteboardType.string
   let tiffType = NSPasteboard.PasteboardType.tiff
@@ -260,6 +261,79 @@ class ClipboardTests: XCTestCase {
     pasteboard.declareTypes([.fileURL, .string], owner: nil)
     // fileURL is left without data
     pasteboard.setString("bar", forType: .string)
+    waitForExpectations(timeout: 2)
+  }
+
+  func testMaterializesStandaloneImageFileURLFromCacheUsingDetectedType() throws {
+    let jpegData = try XCTUnwrap(
+      NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .jpeg, properties: [:])
+    )
+    let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("image.data")
+    try jpegData.write(to: url)
+
+    let hookExpectation = expectation(description: "Hook is called")
+    clipboard.onNewCopy({ (item: HistoryItem) in
+      XCTAssertEqual(item.contents.map(\.type), [self.jpegType.rawValue])
+      XCTAssertEqual(item.imageData, jpegData)
+      hookExpectation.fulfill()
+    })
+
+    clipboard.start()
+    pasteboard.clearContents()
+    pasteboard.writeObjects([url as NSURL])
+
+    waitForExpectations(timeout: 2)
+  }
+
+  func testDoesNotMaterializeStandalonePNGWhenImagesAreDisabled() throws {
+    Defaults[.enabledPasteboardTypes] = [.fileURL]
+    let pngData = try XCTUnwrap(
+      NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])
+    )
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+      .appendingPathExtension("png")
+    try pngData.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let hookExpectation = expectation(description: "Hook is called")
+    clipboard.onNewCopy({ (item: HistoryItem) in
+      XCTAssertEqual(item.contents.map(\.type), [self.fileURLType.rawValue])
+      hookExpectation.fulfill()
+    })
+
+    clipboard.start()
+    pasteboard.clearContents()
+    pasteboard.writeObjects([url as NSURL])
+
+    waitForExpectations(timeout: 2)
+  }
+
+  func testDoesNotMaterializeStandalonePNGOutsideTemporaryDirectories() throws {
+    let pngData = try XCTUnwrap(
+      NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])
+    )
+    let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("image.png")
+    try pngData.write(to: url)
+
+    let hookExpectation = expectation(description: "Hook is called")
+    clipboard.onNewCopy({ (item: HistoryItem) in
+      XCTAssertEqual(item.contents.map(\.type), [self.fileURLType.rawValue])
+      hookExpectation.fulfill()
+    })
+
+    clipboard.start()
+    pasteboard.clearContents()
+    pasteboard.writeObjects([url as NSURL])
+
     waitForExpectations(timeout: 2)
   }
 
