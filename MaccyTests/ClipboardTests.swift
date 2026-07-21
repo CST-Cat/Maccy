@@ -289,6 +289,84 @@ class ClipboardTests: XCTestCase {
     waitForExpectations(timeout: 2)
   }
 
+  @MainActor
+  func testMaterializesTemporaryImageFileURLWhenFilesAreDisabled() throws {
+    Defaults[.enabledPasteboardTypes] = Set(StorageType.images.types)
+    let pngData = try XCTUnwrap(
+      NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])
+    )
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+      .appendingPathExtension("png")
+    try pngData.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    var copiedItem: HistoryItem?
+    clipboard.onNewCopy({ copiedItem = $0 })
+
+    pasteboard.clearContents()
+    pasteboard.writeObjects([url as NSURL])
+    clipboard.checkForChangesInPasteboard()
+
+    XCTAssertEqual(copiedItem?.contents.map(\.type), [NSPasteboard.PasteboardType.png.rawValue])
+    XCTAssertEqual(copiedItem?.imageData, pngData)
+  }
+
+  @MainActor
+  func testKeepsTemporaryNonImageFileURL() throws {
+    Defaults[.enabledPasteboardTypes] = [.fileURL, .png, .tiff]
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+      .appendingPathExtension("png")
+    try Data("not an image".utf8).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    var copiedItem: HistoryItem?
+    clipboard.onNewCopy({ copiedItem = $0 })
+
+    pasteboard.clearContents()
+    pasteboard.writeObjects([url as NSURL])
+    clipboard.checkForChangesInPasteboard()
+
+    XCTAssertEqual(copiedItem?.contents.map(\.type), [fileURLType.rawValue])
+    XCTAssertEqual(copiedItem?.contents.first?.value, url.dataRepresentation)
+
+    copiedItem = nil
+    Defaults[.enabledPasteboardTypes] = Set(StorageType.images.types)
+    pasteboard.clearContents()
+    pasteboard.writeObjects([url as NSURL])
+    clipboard.checkForChangesInPasteboard()
+
+    XCTAssertNil(copiedItem)
+  }
+
+  @MainActor
+  func testIgnoresTemporaryImageFileURLWithIgnoredTypes() throws {
+    Defaults[.enabledPasteboardTypes] = [.fileURL, .png, .tiff]
+    let pngData = try XCTUnwrap(
+      NSBitmapImageRep(data: image.tiffRepresentation!)?.representation(using: .png, properties: [:])
+    )
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString)
+      .appendingPathExtension("png")
+    try pngData.write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    var copiedItems = [HistoryItem]()
+    clipboard.onNewCopy({ copiedItems.append($0) })
+
+    for ignoredType in [NSPasteboard.PasteboardType.concealed, .transient] {
+      let item = NSPasteboardItem()
+      item.setData(url.dataRepresentation, forType: .fileURL)
+      item.setData(Data(), forType: ignoredType)
+      pasteboard.clearContents()
+      pasteboard.writeObjects([item])
+      clipboard.checkForChangesInPasteboard()
+    }
+
+    XCTAssertTrue(copiedItems.isEmpty)
+  }
+
   func testDoesNotMaterializeStandalonePNGWhenImagesAreDisabled() throws {
     Defaults[.enabledPasteboardTypes] = [.fileURL]
     let pngData = try XCTUnwrap(

@@ -177,7 +177,9 @@ class Clipboard {
     // Reading types on NSPasteboard gives all the available
     // types - even the ones that are not present on the NSPasteboardItem.
     // See https://github.com/p0deje/Maccy/issues/241.
-    if shouldIgnore(Set(pasteboard.types ?? [])) {
+    let pasteboardTypes = Set(pasteboard.types ?? [])
+    let hasEnabledPasteboardType = !pasteboardTypes.isDisjoint(with: enabledTypes)
+    if shouldIgnore(pasteboardTypes) {
       return
     }
 
@@ -190,6 +192,7 @@ class Clipboard {
     // - https://github.com/p0deje/Maccy/issues/78
     // - https://github.com/p0deje/Maccy/issues/472
     var contents = [HistoryItemContent]()
+    var hasMaterializedImage = false
     pasteboard.pasteboardItems?.forEach({ item in
       var types = Set(item.types)
       if types.contains(.string) && isEmptyString(item) && !richText(item) {
@@ -201,7 +204,6 @@ class Clipboard {
       }
 
       types = types
-        .subtracting(disabledTypes)
         .filter { !$0.rawValue.starts(with: dynamicTypePrefix) }
         .filter { !$0.rawValue.starts(with: microsoftSourcePrefix) }
 
@@ -214,14 +216,15 @@ class Clipboard {
 
       if let imageContent = materializedImageContent(from: item, types: types) {
         contents.append(imageContent)
+        hasMaterializedImage = true
       } else {
-        types.forEach { type in
+        types.subtracting(disabledTypes).forEach { type in
           contents.append(HistoryItemContent(type: type.rawValue, value: item.data(forType: type)))
         }
       }
     })
 
-    guard !contents.isEmpty else {
+    guard !contents.isEmpty, hasEnabledPasteboardType || hasMaterializedImage else {
       return
     }
 
@@ -280,8 +283,10 @@ class Clipboard {
   private func shouldIgnore(_ types: Set<NSPasteboard.PasteboardType>) -> Bool {
     let ignoredTypes = self.ignoredTypes
       .union(Defaults[.ignoredPasteboardTypes].map({ NSPasteboard.PasteboardType($0) }))
+    let hasEnabledType = !types.isDisjoint(with: enabledTypes)
+    let mayContainMaterializableImage = imagesEnabled && types.contains(.fileURL)
 
-    return types.isDisjoint(with: enabledTypes) ||
+    return (!hasEnabledType && !mayContainMaterializableImage) ||
       !types.isDisjoint(with: ignoredTypes)
   }
 
